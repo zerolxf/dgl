@@ -10,6 +10,7 @@
 #include <dmlc/thread_local.h>
 #include <dmlc/logging.h>
 #include <random>
+#include <algorithm>
 #include <thread>
 
 namespace dgl {
@@ -42,6 +43,11 @@ class RandomEngine {
   /*! \brief Get the thread-local random number generator instance */
   static RandomEngine *ThreadLocal() {
     return dmlc::ThreadLocalStore<RandomEngine>::Get();
+  }
+
+  template<typename T>
+  void Shuffle(T *start, T *end) {
+    std::shuffle(start, end, rng_);
   }
 
   /*!

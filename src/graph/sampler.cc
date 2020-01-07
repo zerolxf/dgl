@@ -1539,8 +1539,7 @@ public:
     if (replacement_ == false) {
       // Now we should shuffle the data and reset the sampler.
       dgl_id_t *seed_ids = static_cast<dgl_id_t *>(seed_edges_->data);
-      std::shuffle(seed_ids, seed_ids + seed_edges_->shape[0],
-                   std::default_random_engine());
+      RandomEngine::ThreadLocal()->Shuffle(seed_ids, seed_ids + seed_edges_->shape[0]);
     }
   }
 
