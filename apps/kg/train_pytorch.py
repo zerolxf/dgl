@@ -42,7 +42,6 @@ def train(args, model, train_sampler, valid_samplers=None, queue=None):
     forward_time = 0
     backward_time = 0
 
-    valid_metrics = []
     for step in range(args.init_step, args.max_step):
         start1 = time.time()
         pos_g, neg_g = next(train_sampler)
@@ -80,10 +79,9 @@ def train(args, model, train_sampler, valid_samplers=None, queue=None):
         if args.valid and (step + 1) % args.eval_interval == 0 and valid_samplers is not None:
             #start = time.time()
             metrics = test(args, model, valid_samplers, mode='Valid')
-            valid_metrics.append(metrics)
             #print('test:', time.time() - start)
-    if queue is not None:
-        queue.put(valid_metrics)
+            if queue is not None:
+                queue.put(metrics)
 
 def test(args, model, test_samplers, mode='Test', queue=None):
     if args.num_proc > 1:
