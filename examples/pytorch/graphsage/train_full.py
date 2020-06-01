@@ -7,6 +7,7 @@ Simple reference implementation of GraphSAGE.
 import argparse
 import time
 import numpy as np
+from scipy import sparse as spsp
 import networkx as nx
 import torch
 import torch.nn as nn
@@ -14,6 +15,7 @@ import torch.nn.functional as F
 from dgl import DGLGraph
 from dgl.data import register_data_args, load_data
 from dgl.nn.pytorch.conv import SAGEConv
+from pyinstrument import Profiler
 
 
 class GraphSAGE(nn.Module):
@@ -96,8 +98,19 @@ def main(args):
 
     # graph preprocess and calculate normalization factor
     g = data.graph
-    g.remove_edges_from(nx.selfloop_edges(g))
+    #g.remove_edges_from(nx.selfloop_edges(g))
     g = DGLGraph(g)
+
+    print('start permutation')
+    spm = g.adjacency_matrix_scipy()
+    perm = spsp.csgraph.reverse_cuthill_mckee(spm)
+    spm = spm.tocoo()
+    spm.row = perm.take(spm.row)
+    spm.col = perm.take(spm.col)
+    spm = spsp.coo_matrix(spm)
+    g = DGLGraph(spm)
+    print('permutation finish')
+
     n_edges = g.number_of_edges()
 
     # create GraphSAGE model
@@ -120,6 +133,8 @@ def main(args):
 
     # initialize graph
     dur = []
+    profiler = Profiler()
+    profiler.start()
     for epoch in range(args.n_epochs):
         model.train()
         if epoch >= 3:
@@ -139,6 +154,8 @@ def main(args):
         print("Epoch {:05d} | Time(s) {:.4f} | Loss {:.4f} | Accuracy {:.4f} | "
               "ETputs(KTEPS) {:.2f}".format(epoch, np.mean(dur), loss.item(),
                                             acc, n_edges / np.mean(dur) / 1000))
+    profiler.stop()
+    print(profiler.output_text(unicode=True, color=True))
 
     print()
     acc = evaluate(model, features, labels, test_mask)
