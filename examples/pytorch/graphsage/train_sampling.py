@@ -1,5 +1,6 @@
 import dgl
 import numpy as np
+from scipy import sparse as spsp
 import torch as th
 import torch.nn as nn
 import torch.nn.functional as F
@@ -12,7 +13,7 @@ import time
 import argparse
 from _thread import start_new_thread
 from functools import wraps
-from dgl.data import RedditDataset
+from ogb.nodeproppred import DglNodePropPredDataset
 import tqdm
 import traceback
 
@@ -125,7 +126,7 @@ def compute_acc(pred, labels):
     """
     return (th.argmax(pred, dim=1) == labels).float().sum() / len(pred)
 
-def evaluate(model, g, inputs, labels, val_mask, batch_size, device):
+def evaluate(model, g, inputs, labels, val_nid, batch_size, device):
     """
     Evaluate the model on the validation set specified by ``val_mask``.
     g : The entire graph.
@@ -139,7 +140,7 @@ def evaluate(model, g, inputs, labels, val_mask, batch_size, device):
     with th.no_grad():
         pred = model.inference(g, inputs, batch_size, device)
     model.train()
-    return compute_acc(pred[val_mask], labels[val_mask])
+    return compute_acc(pred[val_nid], labels[val_nid])
 
 def load_subtensor(g, labels, seeds, input_nodes, device):
     """
@@ -152,15 +153,12 @@ def load_subtensor(g, labels, seeds, input_nodes, device):
 #### Entry point
 def run(args, device, data):
     # Unpack data
-    train_mask, val_mask, in_feats, labels, n_classes, g = data
-    train_nid = th.LongTensor(np.nonzero(train_mask)[0])
-    val_nid = th.LongTensor(np.nonzero(val_mask)[0])
-    train_mask = th.BoolTensor(train_mask)
-    val_mask = th.BoolTensor(val_mask)
+    train_nid, val_nid, in_feats, labels, n_classes, g = data
 
     # Create sampler
     sampler = NeighborSampler(g, [int(fanout) for fanout in args.fan_out.split(',')])
 
+    print('train size: {}, batch size: {}'.format(len(train_nid), args.batch_size))
     # Create PyTorch DataLoader for constructing blocks
     dataloader = DataLoader(
         dataset=train_nid.numpy(),
@@ -185,7 +183,9 @@ def run(args, device, data):
 
         # Loop over the dataloader to sample the computation dependency graph as a list of
         # blocks.
+        num_steps = 0
         for step, blocks in enumerate(dataloader):
+            num_steps = step + 1
             tic_step = time.time()
 
             # The nodes for input lies at the LHS side of the first block.
@@ -211,11 +211,11 @@ def run(args, device, data):
                     epoch, step, loss.item(), acc.item(), np.mean(iter_tput[3:]), gpu_mem_alloc))
 
         toc = time.time()
-        print('Epoch Time(s): {:.4f}'.format(toc - tic))
+        print('Epoch Time(s): {:.4f}. #steps={}'.format(toc - tic, num_steps))
         if epoch >= 5:
             avg += toc - tic
         if epoch % args.eval_every == 0 and epoch != 0:
-            eval_acc = evaluate(model, g, g.ndata['features'], labels, val_mask, args.batch_size, device)
+            eval_acc = evaluate(model, g, g.ndata['features'], labels, val_nid, args.batch_size, device)
             print('Eval Acc {:.4f}'.format(eval_acc))
 
     print('Avg epoch time: {}'.format(avg / (epoch - 4)))
@@ -233,7 +233,7 @@ if __name__ == '__main__':
     argparser.add_argument('--eval-every', type=int, default=5)
     argparser.add_argument('--lr', type=float, default=0.003)
     argparser.add_argument('--dropout', type=float, default=0.5)
-    argparser.add_argument('--num-workers', type=int, default=0,
+    argparser.add_argument('--num-workers', type=int, default=4,
         help="Number of sampling processes. Use 0 for no extra process.")
     args = argparser.parse_args()
     
@@ -242,19 +242,38 @@ if __name__ == '__main__':
     else:
         device = th.device('cpu')
 
-    # load reddit data
-    data = RedditDataset(self_loop=True)
-    train_mask = data.train_mask
-    val_mask = data.val_mask
-    features = th.Tensor(data.features)
+    # load OGB product data
+    data = DglNodePropPredDataset(name='ogbn-products')
+    splitted_idx = data.get_idx_split()
+    g, labels = data[0]
+    labels = th.LongTensor(labels[:, 0])
+    features = g.ndata['feat']
+
+    spm = g.adjacency_matrix_scipy()
+    perm = spsp.csgraph.reverse_cuthill_mckee(spm)
+    spm = spm.tocoo()
+    spm.row = perm.take(spm.row)
+    spm.col = perm.take(spm.col)
+    spm = spsp.coo_matrix(spm)
+    g = dgl.graph(spm)
+
+    #g = dgl.as_heterograph(g)
+
+    g.ndata['labels'] = labels
     in_feats = features.shape[1]
-    labels = th.LongTensor(data.labels)
-    n_classes = data.num_labels
+    n_classes = len(th.unique(labels))
+
+    # Find the node IDs in the training, validation, and test set.
+    train_nid, val_nid, test_nid = splitted_idx['train'], splitted_idx['valid'], splitted_idx['test']
+    print('|V|={}, |E|={}'.format(g.number_of_nodes(), g.number_of_edges()))
+    print('train: {}, valid: {}, test: {}'.format(len(train_nid), len(val_nid), len(test_nid)))
+
     # Construct graph
-    g = dgl.graph(data.graph.all_edges())
     g.ndata['features'] = features
+    print('prepare g')
     prepare_mp(g)
+    print('preparation finish')
     # Pack data
-    data = train_mask, val_mask, in_feats, labels, n_classes, g
+    data = train_nid, val_nid, in_feats, labels, n_classes, g
 
     run(args, device, data)
