@@ -16,6 +16,8 @@ from dgl.data import RedditDataset
 import tqdm
 import traceback
 
+from load_graph import load_reddit, load_ogb
+
 #### Neighbor sampler
 
 class NeighborSampler(object):
@@ -153,10 +155,9 @@ def load_subtensor(g, labels, seeds, input_nodes, device):
 def run(args, device, data):
     # Unpack data
     train_mask, val_mask, in_feats, labels, n_classes, g = data
-    train_nid = th.LongTensor(np.nonzero(train_mask)[0])
-    val_nid = th.LongTensor(np.nonzero(val_mask)[0])
-    train_mask = th.BoolTensor(train_mask)
-    val_mask = th.BoolTensor(val_mask)
+    train_nid = th.nonzero(train_mask, as_tuple=True)[0]
+    val_nid = th.nonzero(val_mask, as_tuple=True)[0]
+    print(train_nid.shape)
 
     # Create sampler
     sampler = NeighborSampler(g, [int(fanout) for fanout in args.fan_out.split(',')])
@@ -243,16 +244,13 @@ if __name__ == '__main__':
         device = th.device('cpu')
 
     # load reddit data
-    data = RedditDataset(self_loop=True)
-    train_mask = data.train_mask
-    val_mask = data.val_mask
-    features = th.Tensor(data.features)
-    in_feats = features.shape[1]
-    labels = th.LongTensor(data.labels)
-    n_classes = data.num_labels
-    # Construct graph
-    g = dgl.graph(data.graph.all_edges())
-    g.ndata['features'] = features
+    g, n_classes = load_reddit()
+    #g, n_classes = load_ogb('ogbn-products')
+    in_feats = g.ndata['features'].shape[1]
+    train_mask = g.ndata['train_mask']
+    val_mask = g.ndata['val_mask']
+    labels = g.ndata['labels']
+
     prepare_mp(g)
     # Pack data
     data = train_mask, val_mask, in_feats, labels, n_classes, g
